@@ -1,24 +1,36 @@
+```text
+███████╗██╗   ██╗ ██████╗ ██╗     ██╗   ██╗███████╗
+██╔════╝██║   ██║██╔═══██╗██║     ██║   ██║██╔════╝
+█████╗  ██║   ██║██║   ██║██║     ██║   ██║█████╗
+██╔══╝  ╚██╗ ██╔╝██║   ██║██║     ╚██╗ ██╔╝██╔══╝
+███████╗ ╚████╔╝ ╚██████╔╝███████╗ ╚████╔╝ ███████╗
+╚══════╝  ╚═══╝   ╚═════╝ ╚══════╝  ╚═══╝  ╚══════╝
+```
+
 # EVOLVE
 
-EVOLVE is a Cursor-only v1 CLI and daemon for safely evolving local agent assets over time.
+EVOLVE is a TypeScript CLI for autonomous agent evolution.
 
-It reads Cursor conversation metadata and supported Cursor file surfaces, creates evidence
-cards, asks Cursor SDK specialist agents for proposals when `CURSOR_API_KEY` is available,
-validates those proposals conservatively, applies only approved changes with exact backups,
-and writes pre/post snapshots plus deep diffs for every epoch.
+Today it is **Cursor-only**. It scans Cursor conversations and managed Cursor
+agent assets, builds compact evidence, asks Cursor SDK agents for improvement
+proposals, validates them strictly, applies only safe EVOLVE-managed changes,
+and writes pre/post snapshots with rollback data.
 
-V1 intentionally does not read or mutate Codex or Claude paths.
-
-## Quick Start
+## Install
 
 ```bash
 pnpm install
 pnpm build
-pnpm evolve init --systems cursor --yes
-pnpm evolve snapshot create --label before-manual
-pnpm evolve run --once
-pnpm evolve snapshot create --label after-manual
-pnpm evolve diff before-manual after-manual
 ```
 
-State is stored under `~/.evolve`.
+## Use
+
+```bash
+pnpm evolve init --systems cursor --yes
+pnpm evolve doctor
+pnpm evolve run --once
+```
+
+Runtime state lives in `~/.evolve`. Cursor outputs are written only to managed
+Cursor surfaces such as `~/.cursor/skills/evolve/*`, `~/.cursor/agents/evolve-*`,
+and `~/.cursor/rules/evolve-*`.
