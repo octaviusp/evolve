@@ -46,4 +46,46 @@ describe("proposal validation", () => {
     expect(decision.status).toBe("rejected");
     expect(decision.reasons.join(" ")).toContain("non-Cursor");
   });
+
+  it("rejects first-run create_file operations outside evolve-managed cursor paths", async () => {
+    const root = await makeTempRoot("validate-managed");
+    const config = makeTestConfig(root);
+    const evidence: EvidenceCard[] = [
+      {
+        id: "e1",
+        system: "cursor",
+        sourcePath: config.cursor.appDb,
+        sourceKey: "k",
+        contentHash: "h",
+        createdAt: new Date().toISOString(),
+        kind: "conversation",
+        title: "t",
+        summary: "s",
+        signals: ["bug"],
+        pointers: [],
+        redacted: false,
+      },
+    ];
+    const proposal: EvolutionProposal = {
+      id: "p2",
+      epochId: "epoch",
+      specialist: "subagent-evolution",
+      kind: "subagent",
+      title: "unmanaged agent",
+      confidence: 0.95,
+      evidenceIds: ["e1"],
+      rationale: "This is specific enough to pass the rationale length check.",
+      operations: [
+        {
+          op: "create_file",
+          path: path.join(config.cursor.agentsDir, "memory-updater.md"),
+          content: "---\nname: memory-updater\n---\nbody",
+          reason: "test",
+        },
+      ],
+    };
+    const decision = validateProposal(config, evidence, proposal);
+    expect(decision.status).toBe("rejected");
+    expect(decision.reasons.join(" ")).toContain("EVOLVE-managed");
+  });
 });

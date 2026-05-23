@@ -35,7 +35,7 @@ export class CursorSdkAgentAdapter {
       name: `EVOLVE ${input.specialist} ${input.epochId}`,
       model: { id: modelId, params: [{ id: "thinking", value: this.config.model.thinking }] },
       mode: "plan",
-      local: { cwd, sandboxOptions: { enabled: true } },
+      local: { cwd },
     } as any);
 
     try {
@@ -74,7 +74,11 @@ Hard constraints:
 - Prefer rejecting weak ideas over adding noisy agent instructions.
 - Every proposal must cite evidenceIds from the evidence file.
 - Allowed operation paths must be under ~/.cursor/skills, ~/.cursor/agents, ~/.cursor/rules, or ~/.cursor/hooks.json.
-- For first-run safety, prefer EVOLVE-managed paths such as ~/.cursor/skills/evolve/<name>/SKILL.md.
+- For first-run safety, new files MUST be EVOLVE-managed:
+  - skills: ~/.cursor/skills/evolve/<name>/SKILL.md
+  - subagents: ~/.cursor/agents/evolve-<name>.md
+  - rules: ~/.cursor/rules/evolve-<name>.mdc
+- Do not propose ~/.cursor/agents/<name>.md unless the basename starts with evolve-.
 
 Specialist: ${input.specialist}
 Evidence file: ${input.evidencePath}

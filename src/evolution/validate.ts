@@ -32,6 +32,13 @@ export function validateProposal(
     if (operation.path.includes(".codex") || operation.path.includes(".claude")) {
       reasons.push(`non-Cursor path rejected: ${operation.path}`);
     }
+    if (
+      config.mutation.conservativeFirstRun &&
+      (operation.op === "create_file" || operation.op === "replace_file") &&
+      !isEvolveManagedPath(config, operation.path)
+    ) {
+      reasons.push(`first-run mutation must target an EVOLVE-managed path: ${operation.path}`);
+    }
     if ("content" in operation && containsSecret(operation.content)) {
       reasons.push(`operation content appears to contain a secret: ${operation.path}`);
     }
