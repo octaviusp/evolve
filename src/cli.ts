@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { Command } from "commander";
 import chalk from "chalk";
-import { createDefaultConfig, loadConfig, writeDefaultConfig } from "./config.js";
+import ora from "ora";
+import { createDefaultConfig, loadConfig, writeConfig } from "./config.js";
 import { defaultConfigPath } from "./paths.js";
 import { openEvolveDatabase } from "./storage/database.js";
 import { createSnapshot } from "./snapshot.js";
@@ -10,6 +11,8 @@ import { diffSnapshots, loadSnapshot, renderDiffMarkdown } from "./diff.js";
 import { findSnapshotPath } from "./storage/database.js";
 import { runOnce } from "./evolution/epoch.js";
 import { rollback as rollbackManifest } from "./evolution/apply.js";
+import { scanCursorEnvironment } from "./onboarding/scan.js";
+import { renderChecks, renderKeyValue, renderLogo } from "./ui/render.js";
 
 export function buildCli(): Command {
   const program = new Command();
@@ -19,6 +22,7 @@ export function buildCli(): Command {
     .command("init")
     .option("--systems <systems>", "comma-separated systems; v1 supports only cursor", "cursor")
     .option("--yes", "write config without prompting")
+    .option("--no-model-probe", "skip Cursor SDK model availability check")
     .action(async (options) => {
       const systems = String(options.systems)
         .split(",")
@@ -31,12 +35,43 @@ export function buildCli(): Command {
       if (fs.existsSync(configPath) && !options.yes) {
         throw new Error(`${configPath} already exists. Pass --yes to overwrite.`);
       }
-      const config = await writeDefaultConfig(configPath, ["cursor"]);
+
+      console.log(renderLogo());
+      console.log();
+
+      const config = createDefaultConfig(["cursor"]);
+      const spinner = ora("Scanning Cursor installation").start();
+      const report = await scanCursorEnvironment(config, {
+        fix: true,
+        probeModel: options.modelProbe,
+      });
+      config.model.preferred = report.selectedModel;
+      await writeConfig(config, configPath);
       const handle = await openEvolveDatabase(config);
       handle.close();
-      console.log(chalk.green("EVOLVE initialized"));
-      console.log(`Config: ${configPath}`);
-      console.log(`Systems: ${config.systems.join(", ")}`);
+      spinner.succeed("Cursor scan complete");
+
+      console.log();
+      console.log(renderChecks("Onboarding Scan", report.checks));
+      console.log();
+      console.log(
+        renderKeyValue("Configuration", [
+          ["Config", configPath],
+          ["State", config.stateDir],
+          ["Systems", config.systems.join(", ")],
+          ["Model", `${report.selectedModelLabel} (${config.model.preferred})`],
+          ["Interval", `${config.scheduler.intervalMinutes} minutes`],
+          ["Max agents", config.scheduler.maxConcurrentAgents],
+        ]),
+      );
+      if (report.createdPaths.length > 0) {
+        console.log();
+        console.log(chalk.green("Created:"));
+        for (const createdPath of report.createdPaths) console.log(`  ${createdPath}`);
+      }
+      if (!report.ready) throw new Error("EVOLVE initialized config, but Cursor scan is not ready.");
+      console.log();
+      console.log(chalk.green("EVOLVE is ready. Run: ") + chalk.bold("evolve run --once"));
     });
 
   const snapshot = program.command("snapshot").description("Create or inspect snapshots");
@@ -107,32 +142,52 @@ export function buildCli(): Command {
       const epochs = handle.db.prepare("SELECT count(*) AS count FROM epochs").get() as {
         count: number;
       };
-      console.log(chalk.cyan("EVOLVE status"));
-      console.log(`Systems: ${config.systems.join(", ")}`);
-      console.log(`State: ${config.stateDir}`);
-      console.log(`Snapshots: ${snapshots.count}`);
-      console.log(`Evidence cards: ${evidence.count}`);
-      console.log(`Epochs: ${epochs.count}`);
+      console.log(
+        renderKeyValue("EVOLVE Status", [
+          ["Systems", config.systems.join(", ")],
+          ["State", config.stateDir],
+          ["Model", `${config.model.preferred} (${config.model.thinking})`],
+          ["Snapshots", snapshots.count],
+          ["Evidence cards", evidence.count],
+          ["Epochs", epochs.count],
+        ]),
+      );
     } finally {
       handle.close();
     }
   });
 
-  program.command("doctor").action(async () => {
+  program
+    .command("doctor")
+    .option("--fix", "create missing managed Cursor folders")
+    .option("--no-model-probe", "skip Cursor SDK model availability check")
+    .action(async (options) => {
     const config = fs.existsSync(defaultConfigPath())
       ? await loadConfig()
       : createDefaultConfig(["cursor"]);
-    const checks = [
-      ["config path", defaultConfigPath(), fs.existsSync(defaultConfigPath())],
-      ["cursor home", config.cursor.home, fs.existsSync(config.cursor.home)],
-      ["cursor app db", config.cursor.appDb, fs.existsSync(config.cursor.appDb)],
-      ["cursor api key", "CURSOR_API_KEY", Boolean(process.env.CURSOR_API_KEY)],
-    ] as const;
-    for (const [name, target, ok] of checks) {
-      console.log(`${ok ? chalk.green("ok") : chalk.yellow("warn")} ${name}: ${target}`);
-    }
-    console.log("v1 system scope: cursor only");
-  });
+      const spinner = ora("Running EVOLVE doctor").start();
+      const report = await scanCursorEnvironment(config, {
+        fix: Boolean(options.fix),
+        probeModel: options.modelProbe,
+      });
+      spinner.succeed("Doctor scan complete");
+      console.log();
+      console.log(renderChecks("EVOLVE Doctor", report.checks));
+      console.log();
+      console.log(
+        renderKeyValue("Runtime", [
+          ["Scope", "cursor only"],
+          ["Selected model", `${report.selectedModelLabel} (${report.selectedModel})`],
+          ["Bubble rows", report.cursorBubbleRows ?? "n/a"],
+          ["Composer rows", report.cursorComposerRows ?? "n/a"],
+        ]),
+      );
+      if (report.createdPaths.length > 0) {
+        console.log();
+        console.log(chalk.green("Created:"));
+        for (const createdPath of report.createdPaths) console.log(`  ${createdPath}`);
+      }
+    });
 
   program
     .command("rollback")

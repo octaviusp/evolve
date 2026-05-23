@@ -49,9 +49,16 @@ export async function writeDefaultConfig(
   systems: SupportedSystem[] = ["cursor"],
 ): Promise<EvolveConfig> {
   const config = createDefaultConfig(systems);
+  await writeConfig(config, configPath);
+  return config;
+}
+
+export async function writeConfig(
+  config: EvolveConfig,
+  configPath = defaultConfigPath(),
+): Promise<void> {
   await ensureDir(path.dirname(configPath));
   await atomicWriteFile(configPath, toml.stringify(config as any));
-  return config;
 }
 
 export async function loadConfig(configPath = defaultConfigPath()): Promise<EvolveConfig> {
