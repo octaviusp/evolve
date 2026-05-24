@@ -17,11 +17,13 @@ export interface ScanReport {
   selectedModelLabel: string;
   cursorBubbleRows?: number;
   cursorComposerRows?: number;
+  claudeSessionFiles?: number;
+  codexRolloutFiles?: number;
   createdPaths: string[];
   ready: boolean;
 }
 
-export async function scanCursorEnvironment(
+export async function scanEnvironment(
   config: EvolveConfig,
   options: ScanOptions,
 ): Promise<ScanReport> {
@@ -34,14 +36,62 @@ export async function scanCursorEnvironment(
     detail: defaultConfigPath(),
   });
 
+  const partials: Partial<ScanReport> = {};
+
+  for (const system of config.systems) {
+    switch (system) {
+      case "cursor":
+        Object.assign(partials, await scanCursorSystem(config, options, checks, createdPaths));
+        break;
+      case "claude":
+        Object.assign(partials, await scanClaudeSystem(config, options, checks, createdPaths));
+        break;
+      case "codex":
+        Object.assign(partials, await scanCodexSystem(config, options, checks, createdPaths));
+        break;
+    }
+  }
+
+  const apiKeyPresent = Boolean(process.env.CURSOR_API_KEY);
+  checks.push({
+    level: apiKeyPresent ? "ok" : "info",
+    label: "API key (Cursor SDK)",
+    detail: apiKeyPresent ? "CURSOR_API_KEY present" : "CURSOR_API_KEY not set (optional for analysis-only mode)",
+  });
+
+  const model = await resolveOnboardingModel(config, options.probeModel && apiKeyPresent);
+  checks.push({
+    level: model.available ? "ok" : model.probed ? "warn" : "info",
+    label: "Default model",
+    detail: model.detail,
+  });
+
+  const report: ScanReport = {
+    checks,
+    selectedModel: model.id,
+    selectedModelLabel: model.label,
+    createdPaths,
+    ready: checks.every((check) => check.level !== "error"),
+    ...partials,
+  };
+
+  return report;
+}
+
+async function scanCursorSystem(
+  config: EvolveConfig,
+  options: ScanOptions,
+  checks: RenderCheck[],
+  createdPaths: string[],
+): Promise<Partial<ScanReport>> {
   checks.push(pathCheck("Cursor home", config.cursor.home, "dir"));
   checks.push(pathCheck("Cursor database", config.cursor.appDb, "file"));
 
   for (const [label, dir] of [
-    ["Skills folder", config.cursor.skillsDir],
-    ["Agents folder", config.cursor.agentsDir],
-    ["Rules folder", config.cursor.rulesDir],
-    ["EVOLVE skills", path.join(config.cursor.skillsDir, "evolve")],
+    ["Cursor skills", config.cursor.skillsDir],
+    ["Cursor agents", config.cursor.agentsDir],
+    ["Cursor rules", config.cursor.rulesDir],
+    ["Cursor EVOLVE skills", path.join(config.cursor.skillsDir, "evolve")],
   ] as const) {
     const existed = fs.existsSync(dir);
     if (!existed && options.fix) {
@@ -49,18 +99,16 @@ export async function scanCursorEnvironment(
       createdPaths.push(dir);
     }
     checks.push({
-      level: fs.existsSync(dir) ? (existed ? "ok" : "ok") : "warn",
+      level: fs.existsSync(dir) ? "ok" : "warn",
       label,
-      detail: fs.existsSync(dir) ? `${dir}${existed ? "" : " (created)"}` : `${dir} (missing)`,
+      detail: fs.existsSync(dir) ? dir : `${dir} (missing)`,
     });
   }
 
   checks.push({
     level: fs.existsSync(config.cursor.hooksPath) ? "ok" : "info",
-    label: "Hooks file",
-    detail: fs.existsSync(config.cursor.hooksPath)
-      ? config.cursor.hooksPath
-      : `${config.cursor.hooksPath} (optional)`,
+    label: "Cursor hooks",
+    detail: config.cursor.hooksPath,
   });
 
   const dbStats = readCursorDbStats(config.cursor.appDb);
@@ -71,37 +119,125 @@ export async function scanCursorEnvironment(
       detail: `${dbStats.bubbles} bubbles / ${dbStats.composers} composers`,
     });
   } else {
+    checks.push({ level: "warn", label: "Cursor DB scan", detail: dbStats.error });
+  }
+
+  return {
+    cursorBubbleRows: dbStats.ok ? dbStats.bubbles : undefined,
+    cursorComposerRows: dbStats.ok ? dbStats.composers : undefined,
+  };
+}
+
+async function scanClaudeSystem(
+  config: EvolveConfig,
+  options: ScanOptions,
+  checks: RenderCheck[],
+  createdPaths: string[],
+): Promise<Partial<ScanReport>> {
+  checks.push(pathCheck("Claude home", config.claude.home, "dir"));
+
+  for (const [label, dir] of [
+    ["Claude skills", config.claude.skillsDir],
+    ["Claude agents", config.claude.agentsDir],
+    ["Claude commands", config.claude.commandsDir],
+    ["Claude EVOLVE skills", path.join(config.claude.skillsDir, "evolve")],
+  ] as const) {
+    const existed = fs.existsSync(dir);
+    if (!existed && options.fix) {
+      await ensureDir(dir);
+      createdPaths.push(dir);
+    }
     checks.push({
-      level: "warn",
-      label: "Cursor DB scan",
-      detail: dbStats.error,
+      level: fs.existsSync(dir) ? "ok" : "warn",
+      label,
+      detail: fs.existsSync(dir) ? dir : `${dir} (missing)`,
     });
   }
 
-  const apiKeyPresent = Boolean(process.env.CURSOR_API_KEY);
+  const projectsDir = config.claude.projectsDir;
+  let sessionFiles = 0;
+  if (fs.existsSync(projectsDir)) {
+    const countFiles = (dir: string): number => {
+      if (!fs.existsSync(dir)) return 0;
+      let count = 0;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory() && !entry.name.startsWith(".")) {
+          count += countFiles(fullPath);
+        } else if (entry.name.endsWith(".jsonl")) {
+          count++;
+        }
+      }
+      return count;
+    };
+    sessionFiles = countFiles(projectsDir);
+  }
+
   checks.push({
-    level: apiKeyPresent ? "ok" : "warn",
-    label: "Cursor API key",
-    detail: apiKeyPresent ? "CURSOR_API_KEY present" : "CURSOR_API_KEY not set",
+    level: "ok",
+    label: "Claude sessions",
+    detail: `${sessionFiles} JSONL files in ${projectsDir}`,
   });
 
-  const model = await resolveOnboardingModel(config, options.probeModel && apiKeyPresent);
+  return { claudeSessionFiles: sessionFiles };
+}
+
+async function scanCodexSystem(
+  config: EvolveConfig,
+  options: ScanOptions,
+  checks: RenderCheck[],
+  createdPaths: string[],
+): Promise<Partial<ScanReport>> {
+  checks.push(pathCheck("Codex home", config.codex.home, "dir"));
+
+  for (const [label, dir] of [
+    ["Codex skills", config.codex.skillsDir],
+    ["Codex agents", config.codex.agentsDir],
+    ["Codex EVOLVE skills", path.join(config.codex.skillsDir, "evolve")],
+  ] as const) {
+    const existed = fs.existsSync(dir);
+    if (!existed && options.fix) {
+      await ensureDir(dir);
+      createdPaths.push(dir);
+    }
+    checks.push({
+      level: fs.existsSync(dir) ? "ok" : "warn",
+      label,
+      detail: fs.existsSync(dir) ? dir : `${dir} (missing)`,
+    });
+  }
+
+  let rolloutFiles = 0;
+  if (fs.existsSync(config.codex.sessionsDir)) {
+    const countFiles = (dir: string): number => {
+      if (!fs.existsSync(dir)) return 0;
+      let count = 0;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory() && !entry.name.startsWith(".")) {
+          count += countFiles(fullPath);
+        } else if (entry.name.startsWith("rollout-") && entry.name.endsWith(".jsonl")) {
+          count++;
+        }
+      }
+      return count;
+    };
+    rolloutFiles = countFiles(config.codex.sessionsDir);
+  }
+
   checks.push({
-    level: model.available ? "ok" : model.probed ? "warn" : "info",
-    label: "Default model",
-    detail: model.detail,
+    level: "ok",
+    label: "Codex rollouts",
+    detail: `${rolloutFiles} JSONL files in ${config.codex.sessionsDir}`,
   });
 
-  const ready = checks.every((check) => check.level !== "error") && fs.existsSync(config.cursor.home);
-  return {
-    checks,
-    selectedModel: model.id,
-    selectedModelLabel: model.label,
-    cursorBubbleRows: dbStats.ok ? dbStats.bubbles : undefined,
-    cursorComposerRows: dbStats.ok ? dbStats.composers : undefined,
-    createdPaths,
-    ready,
-  };
+  checks.push({
+    level: fs.existsSync(config.codex.configPath) ? "ok" : "info",
+    label: "Codex config",
+    detail: config.codex.configPath,
+  });
+
+  return { codexRolloutFiles: rolloutFiles };
 }
 
 function pathCheck(label: string, target: string, type: "file" | "dir"): RenderCheck {
@@ -146,6 +282,7 @@ async function resolveOnboardingModel(
 ): Promise<{ id: string; label: string; available: boolean; probed: boolean; detail: string }> {
   const preferred = config.model.preferred;
   const label = preferred === "composer-2.5" ? "Composer 2.5 Fast" : preferred;
+
   if (!probe) {
     return {
       id: preferred,

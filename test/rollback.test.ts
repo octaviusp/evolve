@@ -8,7 +8,7 @@ import { makeTempRoot, makeTestConfig, writeText } from "./helpers.js";
 describe("rollback", () => {
   it("restores exact preimage and removes newly-created files", async () => {
     const root = await makeTempRoot("rollback");
-    const config = makeTestConfig(root);
+    const config = makeTestConfig(root, ["cursor"]);
     const existing = path.join(config.cursor.skillsDir, "evolve", "demo", "SKILL.md");
     const created = path.join(config.cursor.skillsDir, "evolve", "new", "SKILL.md");
     await writeText(existing, "old");

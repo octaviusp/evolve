@@ -27,6 +27,18 @@ export function defaultCursorAppDb(): string {
   );
 }
 
+export function defaultClaudeHome(): string {
+  return path.join(os.homedir(), ".claude");
+}
+
+export function defaultCodexHome(): string {
+  return path.join(os.homedir(), ".codex");
+}
+
+export function defaultCursorHome(): string {
+  return path.join(os.homedir(), ".cursor");
+}
+
 export function ensureInside(child: string, parents: string[]): boolean {
   const resolvedChild = path.resolve(child);
   return parents.some((parent) => {
@@ -34,4 +46,20 @@ export function ensureInside(child: string, parents: string[]): boolean {
     const rel = path.relative(resolvedParent, resolvedChild);
     return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
   });
+}
+
+export function systemManagedRoots(
+  config: { cursor: { skillsDir: string; agentsDir: string; rulesDir: string; home: string }; claude: { skillsDir: string; agentsDir: string; commandsDir: string; home: string }; codex: { skillsDir: string; agentsDir: string; home: string } },
+  system: string,
+): string[] {
+  switch (system) {
+    case "cursor":
+      return [config.cursor.skillsDir, config.cursor.agentsDir, config.cursor.rulesDir, config.cursor.home];
+    case "claude":
+      return [config.claude.skillsDir, config.claude.agentsDir, config.claude.commandsDir, config.claude.home];
+    case "codex":
+      return [config.codex.skillsDir, config.codex.agentsDir, config.codex.home];
+    default:
+      return [];
+  }
 }

@@ -52,18 +52,22 @@ export function renderDiffMarkdown(diff: DiffSummary, rollbackCommand?: string):
 
   if (diff.added.length > 0) {
     lines.push(``, `## Added`);
-    for (const file of diff.added) lines.push(`- \`${file.path}\` (${file.ownership})`);
+    for (const file of diff.added) {
+      lines.push(`- \`${file.path}\` [${file.system}] (${file.ownership})`);
+    }
   }
   if (diff.removed.length > 0) {
     lines.push(``, `## Removed`);
-    for (const file of diff.removed) lines.push(`- \`${file.path}\` (${file.ownership})`);
+    for (const file of diff.removed) {
+      lines.push(`- \`${file.path}\` [${file.system}] (${file.ownership})`);
+    }
   }
   if (diff.modified.length > 0) {
     lines.push(``, `## Modified`);
     for (const item of diff.modified) {
       lines.push(
         ``,
-        `### ${item.after.path}`,
+        `### ${item.after.path} [${item.after.system}]`,
         `- Frontmatter changed: ${item.frontmatterChanged ? "yes" : "no"}`,
       );
       if (item.sectionChanges.length > 0) {

@@ -7,7 +7,7 @@ import { makeTempRoot, makeTestConfig } from "./helpers.js";
 describe("cursor ingestion", () => {
   it("reads Cursor bubble rows read-only and deduplicates evidence", async () => {
     const root = await makeTempRoot("cursor-ingest");
-    const config = makeTestConfig(root);
+    const config = makeTestConfig(root, ["cursor"]);
     const cursorDb = new Database(config.cursor.appDb);
     cursorDb.exec("CREATE TABLE cursorDiskKV (key TEXT UNIQUE, value BLOB)");
     cursorDb

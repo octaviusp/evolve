@@ -30,12 +30,12 @@ export function renderLogo(): string {
     chalk.cyan("██╔══╝  ╚██╗ ██╔╝██║   ██║██║     ╚██╗ ██╔╝██╔══╝  "),
     chalk.cyan("███████╗ ╚████╔╝ ╚██████╔╝███████╗ ╚████╔╝ ███████╗"),
     chalk.cyan("╚══════╝  ╚═══╝   ╚═════╝ ╚══════╝  ╚═══╝  ╚══════╝"),
-    chalk.gray("Cursor-only autonomous agent evolution"),
+    chalk.gray("multi-system agent evolution — cursor · claude · codex"),
   ].join("\n");
 }
 
 export function renderChecks(title: string, checks: RenderCheck[]): string {
-  const width = 92;
+  const width = 96;
   const top = `┌${"─".repeat(width)}┐`;
   const bottom = `└${"─".repeat(width)}┘`;
   const headerText = title.slice(0, width - 2);
@@ -43,7 +43,7 @@ export function renderChecks(title: string, checks: RenderCheck[]): string {
   const rows = checks.map((check) => {
     const color = COLORS[check.level];
     const symbol = color(SYMBOLS[check.level]);
-    const labelWidth = 24;
+    const labelWidth = 26;
     const detailWidth = width - labelWidth - 6;
     const label = ellipsize(check.label, labelWidth).padEnd(labelWidth);
     const detail = ellipsize(check.detail, detailWidth).padEnd(detailWidth);

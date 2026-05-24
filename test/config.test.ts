@@ -14,14 +14,25 @@ describe("config", () => {
     expect(fs.existsSync(configPath)).toBe(true);
   });
 
-  it("rejects non-cursor systems", async () => {
+  it("writes and loads a multi-system config", async () => {
+    const root = await makeTempRoot("config-multi");
+    const configPath = path.join(root, "config.toml");
+    await writeDefaultConfig(configPath, ["cursor", "claude", "codex"]);
+    const loaded = await loadConfig(configPath);
+    expect(loaded.systems).toEqual(["cursor", "claude", "codex"]);
+    expect(loaded.analysis.proposalLayerEnabled).toBe(true);
+    expect(loaded.analysis.filterLayerEnabled).toBe(true);
+    expect(loaded.analysis.garbageLayerEnabled).toBe(true);
+  });
+
+  it("rejects invalid systems", async () => {
     const root = await makeTempRoot("config-reject");
     const configPath = path.join(root, "config.toml");
     await fs.promises.writeFile(
       configPath,
       [
         "version = 1",
-        'systems = ["cursor", "codex"]',
+        'systems = ["cursor", "invalid-system"]',
         'stateDir = "~/.evolve"',
         "[model]",
         'preferred = "composer-2.5"',
@@ -30,6 +41,8 @@ describe("config", () => {
         "[scheduler]",
         "intervalMinutes = 10",
         "maxConcurrentAgents = 4",
+        "debounceMs = 5000",
+        'watchPaths = ["~"]',
         "[cursor]",
         'home = "~/.cursor"',
         'appDb = "~/.cursor/state.vscdb"',
@@ -43,6 +56,6 @@ describe("config", () => {
         "allowUnmanagedEvolveBlocks = true",
       ].join("\n"),
     );
-    await expect(loadConfig(configPath)).rejects.toThrow(/Cursor-only/);
+    await expect(loadConfig(configPath)).rejects.toThrow(/Unsupported systems/);
   });
 });

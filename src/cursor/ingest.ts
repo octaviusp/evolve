@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import Database from "better-sqlite3";
 import { EvolveConfig, EvidenceCard } from "../types.js";
 import { sourceSeen } from "../storage/database.js";
@@ -22,7 +23,13 @@ export function ingestCursorEvidence(
   config: EvolveConfig,
   evolveDb: Database.Database,
 ): CursorIngestResult {
-  const db = new Database(config.cursor.appDb, { readonly: true, fileMustExist: true });
+  if (!fs.existsSync(config.cursor.appDb)) return { cards: [], scannedRows: 0 };
+  let db: Database.Database;
+  try {
+    db = new Database(config.cursor.appDb, { readonly: true, fileMustExist: true });
+  } catch {
+    return { cards: [], scannedRows: 0 };
+  }
   try {
     const rows = db
       .prepare(

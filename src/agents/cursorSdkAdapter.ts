@@ -33,7 +33,10 @@ export class CursorSdkAgentAdapter {
     const agent = await sdk.Agent.create({
       apiKey,
       name: `EVOLVE ${input.specialist} ${input.epochId}`,
-      model: { id: modelId, params: [{ id: "thinking", value: this.config.model.thinking }] },
+      model: {
+        id: modelId,
+        params: [{ id: "thinking", value: this.config.model.thinking }],
+      },
       mode: "plan",
       local: { cwd },
     } as any);
@@ -42,7 +45,9 @@ export class CursorSdkAgentAdapter {
       const run = await agent.send(prompt);
       const result = await run.wait();
       if (result.status !== "finished" || !result.result) {
-        throw new AgentUnavailableError(`Cursor SDK run ended with status ${result.status}`);
+        throw new AgentUnavailableError(
+          `Cursor SDK run ended with status ${result.status}`,
+        );
       }
       return parseProposalJson(result.result, input.epochId, input.specialist);
     } finally {
@@ -57,28 +62,24 @@ export class CursorSdkAgentAdapter {
       if (ids.has(this.config.model.preferred)) return this.config.model.preferred;
       if (ids.has(this.config.model.fallback)) return this.config.model.fallback;
     } catch {
-      // If model listing fails but auth is valid, let Cursor resolve the preferred id.
+      // If model listing fails, let Cursor resolve the preferred id
     }
     return this.config.model.preferred;
   }
 
   private buildPrompt(input: SpecialistRunInput): string {
+    const systems = this.config.systems.join(", ");
     return `
-You are an EVOLVE proposal specialist.
+You are an EVOLVE proposal specialist operating across: ${systems}.
 
 Hard constraints:
-- Produce JSON only. No markdown prose.
-- Do not edit files. Propose changes only.
-- Target system is Cursor only.
+- Produce JSON only. No markdown prose outside the json fence.
+- Do not edit files directly. Propose changes only.
+- Target systems: ${systems}.
 - Read the evidence file and asset manifest from disk.
-- Prefer rejecting weak ideas over adding noisy agent instructions.
+- Prefer rejecting weak ideas over adding noisy instructions.
 - Every proposal must cite evidenceIds from the evidence file.
-- Allowed operation paths must be under ~/.cursor/skills, ~/.cursor/agents, ~/.cursor/rules, or ~/.cursor/hooks.json.
-- For first-run safety, new files MUST be EVOLVE-managed:
-  - skills: ~/.cursor/skills/evolve/<name>/SKILL.md
-  - subagents: ~/.cursor/agents/evolve-<name>.md
-  - rules: ~/.cursor/rules/evolve-<name>.mdc
-- Do not propose ~/.cursor/agents/<name>.md unless the basename starts with evolve-.
+- For first-run safety, new files MUST be EVOLVE-managed (start with "evolve-" or reside under an evolve/ subdirectory).
 
 Specialist: ${input.specialist}
 Evidence file: ${input.evidencePath}
@@ -88,7 +89,7 @@ Return shape:
 {
   "proposals": [
     {
-      "kind": "skill" | "subagent" | "hook" | "rule" | "garbage",
+      "kind": "skill" | "subagent" | "hook" | "rule" | "garbage" | "automation",
       "title": "short title",
       "confidence": 0.0,
       "evidenceIds": ["..."],
@@ -103,7 +104,11 @@ Return shape:
   }
 }
 
-function parseProposalJson(raw: string, epochId: string, specialist: string): EvolutionProposal[] {
+function parseProposalJson(
+  raw: string,
+  epochId: string,
+  specialist: string,
+): EvolutionProposal[] {
   const jsonText = extractJson(raw);
   const parsed = JSON.parse(jsonText) as { proposals?: any[] };
   const proposals = Array.isArray(parsed.proposals) ? parsed.proposals : [];
@@ -114,7 +119,9 @@ function parseProposalJson(raw: string, epochId: string, specialist: string): Ev
     kind: proposal.kind,
     title: String(proposal.title ?? "Untitled proposal"),
     confidence: Number(proposal.confidence ?? 0),
-    evidenceIds: Array.isArray(proposal.evidenceIds) ? proposal.evidenceIds.map(String) : [],
+    evidenceIds: Array.isArray(proposal.evidenceIds)
+      ? proposal.evidenceIds.map(String)
+      : [],
     operations: Array.isArray(proposal.operations) ? proposal.operations : [],
     rationale: String(proposal.rationale ?? ""),
   }));
@@ -140,7 +147,11 @@ export function buildOfflineRejectedProposal(
     id: `prop_${epochId}_${specialist}_offline_${shortHash(reason)}`,
     epochId,
     specialist,
-    kind: specialist.includes("garbage") ? "garbage" : specialist.includes("subagent") ? "subagent" : "skill",
+    kind: specialist.includes("garbage")
+      ? "garbage"
+      : specialist.includes("subagent")
+        ? "subagent"
+        : "skill",
     title: `${specialist} unavailable`,
     confidence: 0,
     evidenceIds: evidence.slice(0, 3).map((card) => card.id),

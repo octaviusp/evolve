@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { EvolveConfig, EvolutionProposal, RollbackEntry, RollbackManifest } from "../types.js";
 import { atomicWriteFile, copyFileAtomic, ensureDir, pathExists } from "../utils/fs.js";
+import { sha256 } from "../utils/hash.js";
 import { replaceEvolveBlock } from "../utils/markdown.js";
 
 export async function applyApprovedProposals(
@@ -58,5 +59,5 @@ export async function rollback(manifest: RollbackManifest): Promise<void> {
 }
 
 function encodePath(filePath: string): string {
-  return filePath.replace(/[^A-Za-z0-9_.-]/g, "_");
+  return sha256(filePath).slice(0, 16);
 }
