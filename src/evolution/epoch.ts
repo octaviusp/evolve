@@ -48,17 +48,22 @@ export async function runOnce(
   try {
     // ── Step 1: Pre-snapshot ──
     spinner.text = "Creating pre-evolution snapshot";
+    const t0 = Date.now();
     const { snapshot: pre } = await createSnapshot(config, db, `${epochId}-pre`);
+    process.stderr.write(`[evolve] pre-snapshot: ${pre.files.length} files in ${Date.now() - t0}ms\n`);
     db.prepare("UPDATE epochs SET pre_snapshot_id = ? WHERE id = ?").run(pre.id, epochId);
     await atomicWriteFile(path.join(epochDir, "pre.json"), `${JSON.stringify(pre, null, 2)}\n`);
 
     // ── Step 2: Multi-system ingest ──
     spinner.text = "Ingesting evidence from all systems";
+    const t1 = Date.now();
     const ingestResult = await ingestAllSystems(config, db);
+    process.stderr.write(`[evolve] ingest: cursor=${ingestResult.stats.cursor.cards} claude=${ingestResult.stats.claude.cards} codex=${ingestResult.stats.codex.cards} in ${Date.now() - t1}ms\n`);
     for (const card of ingestResult.evidence) {
       recordEvidence(db, card);
     }
     const evidence = sortEvidenceByRelevance(deduplicateEvidence(latestEvidence(db, 500)));
+    process.stderr.write(`[evolve] evidence: ${evidence.length} cards after dedup\n`);
 
     // ── Step 3: Pattern detection (proposal layer) ──
     spinner.text = "Detecting cross-system patterns";
@@ -77,9 +82,11 @@ export async function runOnce(
     let garbageCandidates: GarbageCandidate[] = [];
     let garbageProposals: EvolutionProposal[] = [];
     if (config.analysis.garbageLayerEnabled) {
+      const t2 = Date.now();
       const garbage = detectGarbage(config, epochId);
       garbageCandidates = garbage.candidates;
       garbageProposals = garbage.proposals;
+      process.stderr.write(`[evolve] garbage: ${garbageCandidates.length} candidates, ${garbageProposals.length} proposals in ${Date.now() - t2}ms\n`);
       for (const c of garbageCandidates) {
         recordGarbageCandidate(
           db,

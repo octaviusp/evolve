@@ -6,12 +6,16 @@ import { sha256, shortHash } from "../utils/hash.js";
 import { redactSecrets } from "../utils/redact.js";
 
 const SIGNAL_PATTERNS: Array<[string, RegExp]> = [
-  ["bug", /\bbug|broken|wrong|regression|failure|failed\b/i],
-  ["retry", /\bretry|again|rerun|second attempt|try again\b/i],
-  ["tests", /\btest|typecheck|lint|build\b/i],
-  ["agent-assets", /\bskill|subagent|hook|rule|memory|prompt\b/i],
-  ["cursor", /\bcursor|composer|agent\b/i],
-  ["evolve", /\bevolve|snapshot|rollback|diff\b/i],
+  ["bug", /\bbug|broken|wrong|regression|failure|failed|error\b/i],
+  ["retry", /\bretry|again|rerun|second attempt|try again|redo\b/i],
+  ["tests", /\btest|typecheck|lint|build|compile|run\b/i],
+  ["agent-assets", /\bskill|subagent|hook|rule|memory|prompt|config\b/i],
+  ["coding", /\brefactor|implement|fix|feature|function|class|file|code|write|create|add|update|change\b/i],
+  ["review", /\breview|pr|pull request|check|examine|inspect|audit\b/i],
+  ["task", /\btask|todo|plan|goal|objective|mission\b/i],
+  ["evolve", /\bevolve|snapshot|rollback|diff|epoch\b/i],
+  ["data", /\bdata|json|sql|database|query|api|endpoint|request\b/i],
+  ["docs", /\bdoc|readme|comment|explain|description|summary\b/i],
 ];
 
 export interface CursorIngestResult {
@@ -73,7 +77,7 @@ function bubbleToEvidenceCard(
   }
 
   const text = extractUsefulText(parsed);
-  if (text.length < 24) return undefined;
+  if (text.length < 8) return undefined;
   const { text: redactedText, redacted } = redactSecrets(text);
   const signals = SIGNAL_PATTERNS.filter(([, pattern]) => pattern.test(redactedText)).map(
     ([signal]) => signal,

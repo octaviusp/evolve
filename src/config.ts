@@ -69,6 +69,7 @@ export function createDefaultConfig(systems: SupportedSystem[] = ALL_SYSTEMS): E
       garbageAgeDays: 30,
       garbageMinDaysSinceLastUse: 21,
       maxProposalsPerEpoch: 8,
+      recentWindowHours: 24,
       proposalLayerEnabled: true,
       filterLayerEnabled: true,
       garbageLayerEnabled: true,

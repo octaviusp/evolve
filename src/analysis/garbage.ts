@@ -11,33 +11,55 @@ export function detectGarbage(
 ): { candidates: GarbageCandidate[]; proposals: EvolutionProposal[] } {
   const candidates: GarbageCandidate[] = [];
 
-  for (const system of config.systems) {
-    switch (system) {
-      case "cursor":
-        candidates.push(...scanCursorGarbage(config));
-        break;
-      case "claude":
-        candidates.push(...scanClaudeGarbage(config));
-        break;
-      case "codex":
-        candidates.push(...scanCodexGarbage(config));
-        break;
+  // Open Cursor DB once for all cursor scans
+  let cursorDb: Database.Database | null = null;
+  if (config.systems.includes("cursor") && fs.existsSync(config.cursor.appDb)) {
+    try {
+      cursorDb = new Database(config.cursor.appDb, { readonly: true, fileMustExist: true });
+    } catch {
+      // skip if DB unavailable
     }
   }
 
-  const proposals = candidates
+  try {
+    for (const system of config.systems) {
+      switch (system) {
+        case "cursor":
+          candidates.push(...scanCursorGarbage(config, cursorDb));
+          break;
+        case "claude":
+          candidates.push(...scanClaudeGarbage(config));
+          break;
+        case "codex":
+          candidates.push(...scanCodexGarbage(config));
+          break;
+      }
+    }
+  } finally {
+    if (cursorDb) cursorDb.close();
+  }
+
+  const capped = candidates
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 40);
+
+  const proposals = capped
     .filter((c) => c.confidence > 0.60 && c.daysSinceLastUse >= config.analysis.garbageMinDaysSinceLastUse)
+    .slice(0, 12)
     .map((c) => garbageToProposal(c, epochId));
 
-  return { candidates, proposals };
+  return { candidates: capped, proposals };
 }
 
-function scanCursorGarbage(config: EvolveConfig): GarbageCandidate[] {
+function scanCursorGarbage(
+  config: EvolveConfig,
+  cursorDb: Database.Database | null,
+): GarbageCandidate[] {
   const candidates: GarbageCandidate[] = [];
 
-  candidates.push(...scanAssetDir(config.cursor.skillsDir, "cursor", "skill", config));
-  candidates.push(...scanAssetDir(config.cursor.agentsDir, "cursor", "subagent", config));
-  candidates.push(...scanAssetDir(config.cursor.rulesDir, "cursor", "rule", config));
+  candidates.push(...scanAssetDir(config.cursor.skillsDir, "cursor", "skill", config, cursorDb));
+  candidates.push(...scanAssetDir(config.cursor.agentsDir, "cursor", "subagent", config, cursorDb));
+  candidates.push(...scanAssetDir(config.cursor.rulesDir, "cursor", "rule", config, cursorDb));
 
   return candidates;
 }
@@ -45,9 +67,9 @@ function scanCursorGarbage(config: EvolveConfig): GarbageCandidate[] {
 function scanClaudeGarbage(config: EvolveConfig): GarbageCandidate[] {
   const candidates: GarbageCandidate[] = [];
 
-  candidates.push(...scanAssetDir(config.claude.skillsDir, "claude", "skill", config));
-  candidates.push(...scanAssetDir(config.claude.agentsDir, "claude", "subagent", config));
-  candidates.push(...scanAssetDir(config.claude.commandsDir, "claude", "skill", config));
+  candidates.push(...scanAssetDir(config.claude.skillsDir, "claude", "skill", config, null));
+  candidates.push(...scanAssetDir(config.claude.agentsDir, "claude", "subagent", config, null));
+  candidates.push(...scanAssetDir(config.claude.commandsDir, "claude", "skill", config, null));
 
   return candidates;
 }
@@ -55,8 +77,8 @@ function scanClaudeGarbage(config: EvolveConfig): GarbageCandidate[] {
 function scanCodexGarbage(config: EvolveConfig): GarbageCandidate[] {
   const candidates: GarbageCandidate[] = [];
 
-  candidates.push(...scanAssetDir(config.codex.skillsDir, "codex", "skill", config));
-  candidates.push(...scanAssetDir(config.codex.agentsDir, "codex", "subagent", config));
+  candidates.push(...scanAssetDir(config.codex.skillsDir, "codex", "skill", config, null));
+  candidates.push(...scanAssetDir(config.codex.agentsDir, "codex", "subagent", config, null));
 
   return candidates;
 }
@@ -66,13 +88,14 @@ function scanAssetDir(
   system: string,
   kind: ProposalKind,
   config: EvolveConfig,
+  cursorDb: Database.Database | null,
 ): GarbageCandidate[] {
   if (!fs.existsSync(dir)) return [];
 
   const allFiles = findAssetFiles(dir);
 
   return allFiles
-    .map((filePath) => evaluateFileForGarbage(filePath, system, kind, config))
+    .map((filePath) => evaluateFileForGarbage(filePath, system, kind, config, cursorDb))
     .filter((c): c is GarbageCandidate => c !== undefined);
 }
 
@@ -95,11 +118,27 @@ function evaluateFileForGarbage(
   system: string,
   kind: ProposalKind,
   config: EvolveConfig,
+  cursorDb: Database.Database | null,
 ): GarbageCandidate | undefined {
   const name = path.basename(filePath, path.extname(filePath));
 
-  if (name.startsWith("evolve-")) return undefined;
+  // NEVER garbage collect core definition files
+  const protectedNames = ["SKILL", "AGENTS", "README", "INDEX", "LICENSE", "CONTRIBUTING"];
+  if (protectedNames.includes(name)) return undefined;
 
+  // NEVER garbage collect files in root skill directories (only subdirs)
+  const skillDirMatch = filePath.match(/\/skills\/([^/]+)\/([^/]+)\.md$/);
+  if (skillDirMatch) {
+    // This is a file directly inside a skill directory, not a subdirectory
+    // Only allow garbage for deep references/rules/examples
+    const depth = filePath.split(path.sep).filter(Boolean).length;
+    const skillBaseDepth = filePath.indexOf("/skills/") >= 0
+      ? filePath.split("/skills/")[0].split(path.sep).filter(Boolean).length + 2
+      : 0;
+    if (depth - skillBaseDepth <= 1) return undefined; // Only allow depth 2+ (references/rules/etc)
+  }
+
+  if (name.startsWith("evolve-")) return undefined;
   if (filePath.includes(".evolve") || filePath.includes("evolve.sqlite")) return undefined;
 
   let stat: fs.Stats;
@@ -111,7 +150,7 @@ function evaluateFileForGarbage(
 
   const lastModifiedAt = new Date(stat.mtimeMs).toISOString();
   const createdAt = new Date(stat.birthtimeMs).toISOString();
-  const lastReferencedAt = findLastReference(filePath, kind, system, config);
+  const lastReferencedAt = findLastReference(filePath, system, cursorDb);
 
   const daysSinceMod = (Date.now() - stat.mtimeMs) / (1000 * 60 * 60 * 24);
   const daysSinceRef = lastReferencedAt
@@ -121,7 +160,7 @@ function evaluateFileForGarbage(
 
   if (daysSinceLastUse < config.analysis.garbageAgeDays / 2) return undefined;
 
-  const referencesFound = countReferences(filePath, kind, system, config);
+  const referencesFound = countReferences(filePath, system, cursorDb);
 
   let confidence = 0;
   if (daysSinceLastUse > config.analysis.garbageAgeDays) confidence += 0.4;
@@ -151,72 +190,21 @@ function evaluateFileForGarbage(
 
 function findLastReference(
   filePath: string,
-  _kind: ProposalKind,
   system: string,
-  config: EvolveConfig,
+  cursorDb: Database.Database | null,
 ): string | null {
   const assetName = path.basename(filePath, path.extname(filePath));
-  const patterns: string[] = [];
 
-  switch (system) {
-    case "cursor": {
-      const appDb = config.cursor.appDb;
-      if (fs.existsSync(appDb)) {
-        try {
-          // Database imported at top level
-          const db = new Database(appDb, { readonly: true, fileMustExist: true });
-          try {
-            const rows = db
-              .prepare(
-                `SELECT key FROM cursorDiskKV WHERE key LIKE '%bubbleId:%' AND value LIKE ? LIMIT 1`,
-              )
-              .all(`%${assetName}%`) as Array<{ key: string }>;
-            if (rows.length > 0) return new Date().toISOString();
-          } finally {
-            db.close();
-          }
-        } catch {
-          // best effort
-        }
-      }
-      break;
-    }
-    case "claude": {
-      patterns.push(path.join(config.claude.projectsDir, "**", "*.jsonl"));
-      break;
-    }
-    case "codex": {
-      patterns.push(path.join(config.codex.sessionsDir, "**", "rollout-*.jsonl"));
-      break;
-    }
-  }
-
-  if (patterns.length > 0) {
+  if (system === "cursor" && cursorDb) {
     try {
-      const searchFiles = fg.sync(patterns, { onlyFiles: true, dot: true });
-      const recent = searchFiles
-        .map((f) => {
-          try {
-            return { path: f, mtime: fs.statSync(f).mtimeMs };
-          } catch {
-            return { path: f, mtime: 0 };
-          }
-        })
-        .sort((a, b) => b.mtime - a.mtime)
-        .slice(0, 20);
-
-      for (const { path: searchPath } of recent) {
-        try {
-          const content = fs.readFileSync(searchPath, "utf8");
-          if (content.includes(assetName)) {
-            return new Date().toISOString();
-          }
-        } catch {
-          // skip
-        }
-      }
+      const rows = cursorDb
+        .prepare(
+          `SELECT key FROM cursorDiskKV WHERE key LIKE '%bubbleId:%' AND CAST(value AS TEXT) LIKE ? LIMIT 1`,
+        )
+        .all(`%${assetName}%`) as Array<{ key: string }>;
+      if (rows.length > 0) return new Date().toISOString();
     } catch {
-      // skip
+      // best effort
     }
   }
 
@@ -225,73 +213,22 @@ function findLastReference(
 
 function countReferences(
   filePath: string,
-  _kind: ProposalKind,
   system: string,
-  config: EvolveConfig,
+  cursorDb: Database.Database | null,
 ): number {
   const assetName = path.basename(filePath, path.extname(filePath));
   let count = 0;
 
-  switch (system) {
-    case "cursor": {
-      const appDb = config.cursor.appDb;
-      if (fs.existsSync(appDb)) {
-        try {
-          // Database imported at top level
-          const db = new Database(appDb, { readonly: true, fileMustExist: true });
-          try {
-            const row = db
-              .prepare(
-                `SELECT count(*) AS count FROM cursorDiskKV WHERE key LIKE '%bubbleId:%' AND value LIKE ?`,
-              )
-              .get(`%${assetName}%`) as { count: number };
-            count += row.count;
-          } finally {
-            db.close();
-          }
-        } catch {
-          // best effort
-        }
-      }
-      break;
-    }
-    case "claude": {
-      try {
-        const files = fg.sync(
-          [path.join(config.claude.projectsDir, "**", "*.jsonl")],
-          { onlyFiles: true, dot: true },
-        ).slice(0, 30);
-        for (const f of files) {
-          try {
-            const content = fs.readFileSync(f, "utf8");
-            count += (content.match(new RegExp(assetName, "g")) ?? []).length;
-          } catch {
-            // skip
-          }
-        }
-      } catch {
-        // skip
-      }
-      break;
-    }
-    case "codex": {
-      try {
-        const files = fg.sync(
-          [path.join(config.codex.sessionsDir, "**", "rollout-*.jsonl")],
-          { onlyFiles: true, dot: true },
-        ).slice(0, 30);
-        for (const f of files) {
-          try {
-            const content = fs.readFileSync(f, "utf8");
-            count += (content.match(new RegExp(assetName, "g")) ?? []).length;
-          } catch {
-            // skip
-          }
-        }
-      } catch {
-        // skip
-      }
-      break;
+  if (system === "cursor" && cursorDb) {
+    try {
+      const row = cursorDb
+        .prepare(
+          `SELECT count(*) AS count FROM cursorDiskKV WHERE key LIKE '%bubbleId:%' AND CAST(value AS TEXT) LIKE ?`,
+        )
+        .get(`%${assetName}%`) as { count: number };
+      count += row.count;
+    } catch {
+      // best effort
     }
   }
 

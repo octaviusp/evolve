@@ -360,7 +360,9 @@ export function filterProposals(
       continue;
     }
 
-    if (proposal.evidenceIds.length < 2) {
+    // Garbage proposals only need their own candidate evidence
+    const minEvidence = proposal.kind === "garbage" ? 1 : 2;
+    if (proposal.evidenceIds.length < minEvidence) {
       filtered.push({ proposal, reason: "insufficient evidence citations" });
       continue;
     }

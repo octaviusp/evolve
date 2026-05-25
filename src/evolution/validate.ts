@@ -15,8 +15,15 @@ export function validateProposal(
   if (proposal.confidence < 0.60) reasons.push("confidence below 0.60 threshold");
   if (proposal.evidenceIds.length === 0) reasons.push("no evidence ids cited");
 
-  for (const id of proposal.evidenceIds) {
-    if (!evidenceIds.has(id)) reasons.push(`unknown evidence id: ${id}`);
+  // Evidence ID matching: skip for garbage proposals (which use candidate IDs)
+  if (proposal.kind !== "garbage") {
+    let unknownCount = 0;
+    for (const id of proposal.evidenceIds) {
+      if (!evidenceIds.has(id)) unknownCount++;
+    }
+    if (unknownCount > 0 && unknownCount === proposal.evidenceIds.length) {
+      reasons.push("all evidence ids outside current window");
+    }
   }
 
   if (proposal.operations.length === 0) reasons.push("no operations proposed");

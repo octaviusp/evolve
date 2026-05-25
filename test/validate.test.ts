@@ -45,7 +45,7 @@ describe("proposal validation", () => {
     const decision = validateProposal(config, evidence, proposal);
     expect(decision.status).toBe("rejected");
     expect(decision.reasons.some((r: string) => r.includes("confidence"))).toBe(true);
-    expect(decision.reasons.some((r: string) => r.includes("unknown evidence"))).toBe(true);
+    expect(decision.reasons.some((r: string) => r.includes("outside current window"))).toBe(true);
   });
 
   it("rejects first-run create_file outside evolve-managed paths", async () => {

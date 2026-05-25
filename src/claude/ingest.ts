@@ -1,22 +1,23 @@
 import fs from "node:fs";
 import path from "node:path";
-import fg from "fast-glob";
 import { EvolveConfig, EvidenceCard } from "../types.js";
 import { sourceSeen } from "../storage/database.js";
 import { sha256, shortHash } from "../utils/hash.js";
 import { redactSecrets } from "../utils/redact.js";
 
 const SIGNAL_PATTERNS: Array<[string, RegExp]> = [
-  ["bug", /\bbug|broken|wrong|regression|failure|failed\b/i],
-  ["retry", /\bretry|again|rerun|second attempt|try again\b/i],
-  ["tests", /\btest|typecheck|lint|build\b/i],
-  ["agent-assets", /\bskill|subagent|hook|rule|memory|prompt\b/i],
+  ["bug", /\bbug|broken|wrong|regression|failure|failed|error\b/i],
+  ["retry", /\bretry|again|rerun|second attempt|try again|redo\b/i],
+  ["tests", /\btest|typecheck|lint|build|compile|run\b/i],
+  ["agent-assets", /\bskill|subagent|hook|rule|memory|prompt|config\b/i],
   ["claude", /\bclaude|system prompt|tool_use|thinking\b/i],
-  ["task", /\bTask tool|subagent|Task\b/i],
+  ["coding", /\brefactor|implement|fix|feature|function|class|file|code|write|create|add|update|change\b/i],
+  ["review", /\breview|pr|pull request|check|examine|inspect|audit\b/i],
+  ["task", /\btask|todo|plan|goal|objective|mission\b/i],
   ["compact", /\bcompact_boundary|compaction\b/i],
-  ["evolve", /\bevolve|snapshot|rollback|diff\b/i],
-  ["coding", /\brefactor|implement|fix|feature|debug\b/i],
-  ["review", /\breview|pr|pull request|code review\b/i],
+  ["evolve", /\bevolve|snapshot|rollback|diff|epoch\b/i],
+  ["data", /\bdata|json|sql|database|query|api|endpoint|request\b/i],
+  ["docs", /\bdoc|readme|comment|explain|description|summary\b/i],
 ];
 
 export interface ClaudeIngestResult {
@@ -24,6 +25,8 @@ export interface ClaudeIngestResult {
   scannedFiles: number;
   scannedEvents: number;
 }
+
+const MAX_AGE_MS = 72 * 60 * 60 * 1000;
 
 export async function ingestClaudeEvidence(
   config: EvolveConfig,
@@ -40,7 +43,10 @@ export async function ingestClaudeEvidence(
       const content = await fs.promises.readFile(sessionPath, "utf8");
       const lines = content.split("\n").filter((line) => line.trim().length > 0);
 
-      for (const line of lines) {
+      // Sample: read last 300 lines only (most recent context is at end for append-only JSONL)
+      const recentLines = lines.slice(-300);
+
+      for (const line of recentLines) {
         scannedEvents++;
         const hash = sha256(line);
         const sourceId = `claude:${sessionPath}:${hash}`;
@@ -57,34 +63,47 @@ export async function ingestClaudeEvidence(
   return { cards, scannedFiles, scannedEvents };
 }
 
+// eslint-disable-next-line @typescript-eslint/require-await
 async function findRecentSessionFiles(config: EvolveConfig): Promise<string[]> {
   const projectsDir = config.claude.projectsDir;
   if (!fs.existsSync(projectsDir)) return [];
 
-  const jsonlFiles = await fg(
-    [
-      path.join(projectsDir, "**", "*.jsonl"),
-      `!${path.join(projectsDir, "**", "subagents", "**")}`,
-    ],
-    {
-      onlyFiles: true,
-      dot: true,
-      deep: 5,
-    },
-  );
+  const cutoff = Date.now() - MAX_AGE_MS;
+  const candidates: Array<{ path: string; mtime: number }> = [];
 
-  const withStats = await Promise.all(
-    jsonlFiles.map(async (filePath) => {
+  // Walk project directories (faster than recursive glob)
+  let dirEntries: fs.Dirent[];
+  try {
+    dirEntries = fs.readdirSync(projectsDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  for (const entry of dirEntries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    const projectDir = path.join(projectsDir, entry.name);
+    let files: fs.Dirent[];
+    try {
+      files = fs.readdirSync(projectDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;
+      if (file.name.includes("subagent") || file.name.includes("agent-")) continue;
+      const filePath = path.join(projectDir, file.name);
       try {
-        const stat = await fs.promises.stat(filePath);
-        return { path: filePath, mtime: stat.mtimeMs };
+        const stat = fs.statSync(filePath);
+        if (stat.mtimeMs > cutoff) {
+          candidates.push({ path: filePath, mtime: stat.mtimeMs });
+        }
       } catch {
-        return { path: filePath, mtime: 0 };
+        // skip
       }
-    }),
-  );
+    }
+  }
 
-  return withStats
+  return candidates
     .sort((a, b) => b.mtime - a.mtime)
     .slice(0, config.claude.maxSessionFilesPerEpoch)
     .map((item) => item.path);
@@ -106,7 +125,7 @@ function sessionLineToEvidenceCard(
   if (!parsed.type) return undefined;
 
   const text = extractClaudeText(parsed);
-  if (text.length < 24) return undefined;
+  if (text.length < 8) return undefined;
 
   const { text: redactedText, redacted } = redactSecrets(text);
   const signals = SIGNAL_PATTERNS.filter(([, pattern]) => pattern.test(redactedText)).map(
@@ -136,6 +155,27 @@ function sessionLineToEvidenceCard(
 function extractClaudeText(parsed: any): string {
   const parts: string[] = [];
 
+  if (parsed.type === "last-prompt") {
+    parts.push(`session:${parsed.sessionId ?? "unknown"}`);
+    if (parsed.leafUuid) parts.push(`last-message:${parsed.leafUuid}`);
+  }
+
+  if (parsed.type === "permission-mode") {
+    parts.push(`permissions:${parsed.permissionMode ?? "unknown"}`);
+  }
+
+  if (parsed.type === "file-history-snapshot") {
+    parts.push(`file-snapshot:${parsed.messageId ?? "unknown"}`);
+  }
+
+  if (parsed.type === "system" && parsed.subtype) {
+    parts.push(`system:${parsed.subtype}`);
+  }
+
+  if (parsed.type === "user" || parsed.type === "assistant") {
+    parts.push(`role:${parsed.type}`);
+  }
+
   if (typeof parsed.message?.content === "string") {
     parts.push(parsed.message.content);
   } else if (Array.isArray(parsed.message?.content)) {
@@ -145,27 +185,19 @@ function extractClaudeText(parsed: any): string {
       } else if (block?.type === "text" && typeof block.text === "string") {
         parts.push(block.text);
       } else if (block?.type === "thinking" && typeof block.thinking === "string") {
-        parts.push(block.thinking);
+        parts.push(`thinking: ${block.thinking.slice(0, 200)}`);
       } else if (block?.type === "tool_use") {
         parts.push(`tool_use:${block.name ?? "unknown"}`);
         if (typeof block.input === "object") {
-          parts.push(JSON.stringify(block.input).slice(0, 800));
+          parts.push(JSON.stringify(block.input).slice(0, 400));
         }
       } else if (block?.type === "tool_result") {
         const resultText = typeof block.content === "string"
           ? block.content
           : JSON.stringify(block.content);
-        parts.push(resultText.slice(0, 800));
+        parts.push(resultText.slice(0, 400));
       }
     }
-  }
-
-  if (typeof parsed.message?.role === "string") {
-    parts.unshift(`role:${parsed.message.role}`);
-  }
-
-  if (parsed.type === "system" && parsed.subtype) {
-    parts.unshift(`system:${parsed.subtype}`);
   }
 
   if (parsed.parentUuid) {
@@ -192,3 +224,4 @@ function makeClaudeTitle(parsed: any, text: string): string {
 
   return `Claude ${typeLabel}: ${first ?? "Claude session event"}`;
 }
+// ... rest of file unchanged from here

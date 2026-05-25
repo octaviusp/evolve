@@ -1,22 +1,23 @@
 import fs from "node:fs";
 import path from "node:path";
-import fg from "fast-glob";
 import { EvolveConfig, EvidenceCard } from "../types.js";
 import { sourceSeen } from "../storage/database.js";
 import { sha256, shortHash } from "../utils/hash.js";
 import { redactSecrets } from "../utils/redact.js";
 
 const SIGNAL_PATTERNS: Array<[string, RegExp]> = [
-  ["bug", /\bbug|broken|wrong|regression|failure|failed\b/i],
-  ["retry", /\bretry|again|rerun|second attempt|try again\b/i],
-  ["tests", /\btest|typecheck|lint|build\b/i],
-  ["agent-assets", /\bskill|subagent|hook|rule|memory|prompt\b/i],
+  ["bug", /\bbug|broken|wrong|regression|failure|failed|error\b/i],
+  ["retry", /\bretry|again|rerun|second attempt|try again|redo\b/i],
+  ["tests", /\btest|typecheck|lint|build|compile|run\b/i],
+  ["agent-assets", /\bskill|subagent|hook|rule|memory|prompt|config\b/i],
   ["codex", /\bcodex|rollout|custom_tool|spawn_agent\b/i],
-  ["task", /\bspawn_agent|exec_command|apply_patch\b/i],
+  ["coding", /\brefactor|implement|fix|feature|function|class|file|code|write|create|add|update|change\b/i],
+  ["review", /\breview|pr|pull request|check|examine|inspect|audit\b/i],
+  ["task", /\btask|todo|plan|goal|objective|mission\b/i],
   ["compact", /\bcompacted|context_compacted\b/i],
-  ["evolve", /\bevolve|snapshot|rollback|diff\b/i],
-  ["coding", /\brefactor|implement|fix|feature|debug\b/i],
-  ["review", /\breview|pr|pull request|code review\b/i],
+  ["evolve", /\bevolve|snapshot|rollback|diff|epoch\b/i],
+  ["data", /\bdata|json|sql|database|query|api|endpoint|request\b/i],
+  ["docs", /\bdoc|readme|comment|explain|description|summary\b/i],
 ];
 
 export interface CodexIngestResult {
@@ -57,31 +58,49 @@ export async function ingestCodexEvidence(
   return { cards, scannedFiles, scannedEvents };
 }
 
+const MAX_AGE_MS = 72 * 60 * 60 * 1000;
+
+// eslint-disable-next-line @typescript-eslint/require-await
 async function findRecentRolloutFiles(config: EvolveConfig): Promise<string[]> {
   const sessionsDir = config.codex.sessionsDir;
   if (!fs.existsSync(sessionsDir)) return [];
 
-  const jsonlFiles = await fg(
-    [path.join(sessionsDir, "**", "rollout-*.jsonl")],
-    {
-      onlyFiles: true,
-      dot: true,
-      deep: 5,
-    },
-  );
+  const cutoff = Date.now() - MAX_AGE_MS;
+  const candidates: Array<{ path: string; mtime: number }> = [];
+  const now = new Date();
 
-  const withStats = await Promise.all(
-    jsonlFiles.map(async (filePath) => {
+  // Target: today and yesterday only (YYYY/MM/DD structure)
+  for (let dayOffset = 0; dayOffset <= 1; dayOffset++) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - dayOffset);
+    const dateDir = path.join(
+      sessionsDir,
+      String(d.getFullYear()),
+      String(d.getMonth() + 1).padStart(2, "0"),
+      String(d.getDate()).padStart(2, "0"),
+    );
+    if (!fs.existsSync(dateDir)) continue;
+    let files: fs.Dirent[];
+    try {
+      files = fs.readdirSync(dateDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      if (!file.isFile() || !file.name.startsWith("rollout-") || !file.name.endsWith(".jsonl")) continue;
+      const filePath = path.join(dateDir, file.name);
       try {
-        const stat = await fs.promises.stat(filePath);
-        return { path: filePath, mtime: stat.mtimeMs };
+        const stat = fs.statSync(filePath);
+        if (stat.mtimeMs > cutoff) {
+          candidates.push({ path: filePath, mtime: stat.mtimeMs });
+        }
       } catch {
-        return { path: filePath, mtime: 0 };
+        // skip
       }
-    }),
-  );
+    }
+  }
 
-  return withStats
+  return candidates
     .sort((a, b) => b.mtime - a.mtime)
     .slice(0, config.codex.maxRolloutFilesPerEpoch)
     .map((item) => item.path);
@@ -103,7 +122,7 @@ function rolloutLineToEvidenceCard(
   if (!parsed.type) return undefined;
 
   const text = extractCodexText(parsed);
-  if (text.length < 24) return undefined;
+  if (text.length < 8) return undefined;
 
   const { text: redactedText, redacted } = redactSecrets(text);
   const signals = SIGNAL_PATTERNS.filter(([, pattern]) => pattern.test(redactedText)).map(
@@ -137,63 +156,90 @@ function rolloutLineToEvidenceCard(
 
 function extractCodexText(parsed: any): string {
   const parts: string[] = [];
+  const p = parsed.payload;
 
   if (parsed.type === "response_item") {
-    if (parsed.response_item_type) {
-      parts.push(`response:${parsed.response_item_type}`);
-    }
-    if (parsed.response?.output && Array.isArray(parsed.response.output)) {
-      for (const item of parsed.response.output) {
-        if (item.type === "message" && item.content) {
-          for (const block of item.content) {
-            if (block.type === "output_text" && typeof block.text === "string") {
-              parts.push(block.text);
-            } else if (block.type === "reasoning" && block.summary) {
-              for (const s of block.summary) {
-                if (typeof s.text === "string") parts.push(s.text);
+    if (p && typeof p === "object") {
+      if (p.type) parts.push(`response:${p.type}`);
+      if (p.role) parts.push(`role:${p.role}`);
+      if (Array.isArray(p.content)) {
+        for (const block of p.content) {
+          if (typeof block === "string") {
+            parts.push(block);
+          } else if (typeof block === "object") {
+            if (typeof block.text === "string") {
+              parts.push(block.text.slice(0, 600));
+            }
+            if (block.summary) {
+              for (const s of Array.isArray(block.summary) ? block.summary : [block.summary]) {
+                if (typeof s?.text === "string") parts.push(s.text.slice(0, 400));
               }
             }
           }
-        } else if (item.type === "function_call") {
-          parts.push(`function_call:${item.name ?? "unknown"}`);
-          if (typeof item.arguments === "string") {
-            parts.push(item.arguments.slice(0, 800));
+        }
+      }
+      if (Array.isArray(p.output)) {
+        for (const item of p.output) {
+          if (item.type === "message" && Array.isArray(item.content)) {
+            for (const block of item.content) {
+              if (typeof block.text === "string") parts.push(block.text.slice(0, 600));
+            }
+          } else if (item.type === "function_call") {
+            parts.push(`fn_call:${item.name ?? "?"}`);
+          } else if (item.type === "function_call_output") {
+            const out = typeof item.output === "string" ? item.output : JSON.stringify(item.output);
+            parts.push(out.slice(0, 400));
           }
-        } else if (item.type === "function_call_output") {
-          const outText = typeof item.output === "string"
-            ? item.output
-            : JSON.stringify(item.output);
-          parts.push(outText.slice(0, 800));
         }
       }
     }
   }
 
   if (parsed.type === "event_msg") {
-    parts.push(`event:${parsed.event_msg_type ?? "unknown"}`);
-    if (typeof parsed.data === "string") {
-      parts.push(parsed.data.slice(0, 800));
-    } else if (parsed.data) {
-      parts.push(JSON.stringify(parsed.data).slice(0, 800));
+    if (p && typeof p === "object") {
+      const subtype = p.type ?? p.event ?? parsed.event_msg_type ?? "unknown";
+      parts.push(`event:${subtype}`);
+      if (typeof p.message === "string") parts.push(p.message.slice(0, 600));
+      if (typeof p.phase === "string") parts.push(`phase:${p.phase}`);
+      if (p.turn_id) parts.push(`turn:${p.turn_id}`);
+      if (typeof p.text_elements === "string") parts.push(p.text_elements.slice(0, 600));
+      if (Array.isArray(p.text_elements)) {
+        for (const t of p.text_elements) {
+          if (typeof t === "string") parts.push(t.slice(0, 400));
+        }
+      }
+      if (typeof p.memory_citation === "string") parts.push(p.memory_citation.slice(0, 400));
+    } else if (typeof p === "string") {
+      parts.push(`event_data:${p.slice(0, 400)}`);
     }
   }
 
   if (parsed.type === "session_meta") {
-    if (parsed.agent_role) parts.push(`agent_role:${parsed.agent_role}`);
-    if (parsed.agent_nickname) parts.push(`agent:${parsed.agent_nickname}`);
-    if (parsed.forked_from_id) parts.push(`forked_from:${parsed.forked_from_id}`);
+    if (p && typeof p === "object") {
+      if (p.agent_role) parts.push(`agent_role:${p.agent_role}`);
+      if (p.agent_nickname) parts.push(`agent:${p.agent_nickname}`);
+      if (p.forked_from_id) parts.push(`forked_from:${p.forked_from_id}`);
+      if (p.cwd) parts.push(`cwd:${p.cwd}`);
+      if (p.id) parts.push(`session_id:${p.id}`);
+    }
   }
 
   if (parsed.type === "turn_context") {
-    if (parsed.user_instructions) {
-      parts.push(parsed.user_instructions.slice(0, 800));
+    if (p && typeof p === "object") {
+      if (p.cwd) parts.push(`cwd:${p.cwd}`);
+      if (p.model) parts.push(`model:${p.model}`);
+      if (p.permission_profile) parts.push(`perms:${p.permission_profile}`);
+      if (typeof p.user_instructions === "string") {
+        parts.push(p.user_instructions.slice(0, 600));
+      }
+      if (p.current_date) parts.push(`date:${p.current_date}`);
     }
-    if (parsed.cwd) parts.push(`cwd:${parsed.cwd}`);
   }
 
   if (parsed.type === "compacted") {
-    if (Array.isArray(parsed.replacement_history)) {
-      parts.push(`compacted:${parsed.replacement_history.length} replacements`);
+    if (Array.isArray(p?.replacement_history ?? parsed.replacement_history)) {
+      const rh = p?.replacement_history ?? parsed.replacement_history;
+      parts.push(`compacted:${rh.length} replacements`);
     }
   }
 
@@ -201,12 +247,14 @@ function extractCodexText(parsed: any): string {
 }
 
 function makeCodexTitle(parsed: any, text: string): string {
+  const p = parsed.payload;
+  const subtype = p?.type ?? p?.event_msg_type ?? "";
   const typeLabel = parsed.type === "response_item"
-    ? `Response(${parsed.response_item_type ?? "unknown"})`
+    ? `Response(${subtype || "message"})`
     : parsed.type === "event_msg"
-    ? `Event(${parsed.event_msg_type ?? "unknown"})`
+    ? `Event(${subtype || "unknown"})`
     : parsed.type === "session_meta"
-    ? `Session(${parsed.agent_nickname ?? "root"})`
+    ? `Session(${p?.agent_nickname ?? "root"})`
     : parsed.type === "turn_context"
     ? "TurnConfig"
     : parsed.type === "compacted"

@@ -49,6 +49,7 @@ export interface EvolveConfig {
     garbageAgeDays: number;
     garbageMinDaysSinceLastUse: number;
     maxProposalsPerEpoch: number;
+    recentWindowHours: number;
     proposalLayerEnabled: boolean;
     filterLayerEnabled: boolean;
     garbageLayerEnabled: boolean;
